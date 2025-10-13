@@ -1,0 +1,15 @@
+# Núcleo
+numpy
+pandas==2.2.3
+
+# Plot
+matplotlib
+mplfinance==0.12.10b0
+
+# HTTP utilidades
+requests==2.32.3
+python-dateutil
+tzdata
+
+# Binance USDⓈ-M Futures (UMFutures)
+binance-futures-connector
