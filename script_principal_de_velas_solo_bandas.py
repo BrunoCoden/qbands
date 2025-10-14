@@ -5,9 +5,11 @@
 #   - Stream/CSV por vela CERRADA en STREAM_INTERVAL (1m)
 #
 # CSV: una fila por cada vela 1m cerrada
-# Columns: CloseTimeMs, Date, Open, High, Low, Close, Volume,
+# Columns: Date, Open, High, Low, Close,
 #          UpperMid, ValueUpper, LowerMid, ValueLower,
 #          TouchUpperQ, TouchLowerQ
+#  - Precios truncados a 3 decimales (no redondeo)
+#  - Salida: tablaQ.csv (encabezado fijo, columnas estables)
 # ---------------------------------------------------------
 
 import os
@@ -30,7 +32,14 @@ API_SYMBOL       = SYMBOL_DISPLAY.replace(".P", "")
 CHANNEL_INTERVAL = os.getenv("CHANNEL_INTERVAL", "30m").strip()
 STREAM_INTERVAL  = os.getenv("STREAM_INTERVAL",  "1m").strip()
 
-# Helpers para leer ints de env de forma robusta
+# Historia larga para igualar al gráfico
+PLOT_STREAM_BARS  = int(os.getenv("PLOT_STREAM_BARS",  "5000"))
+PLOT_CHANNEL_BARS = int(os.getenv("PLOT_CHANNEL_BARS", "2000"))
+
+USE_PAGINADO_CHANNEL = int(os.getenv("USE_PAGINADO_CHANNEL", "1"))
+USE_PAGINADO_STREAM  = int(os.getenv("USE_PAGINADO_STREAM",  "0"))
+
+# Helpers ints
 def _parse_int_like(val, default):
     try:
         if val is None:
@@ -52,6 +61,7 @@ def _env_int_clamped(name, default, lo=1, hi=1500):
         print(f"[WARN] {name} fuera de rango ({x}). Clampeo a [{lo}..{hi}].")
     return max(lo, min(hi, x))
 
+# Límites fetch corto
 LIMIT_CHANNEL    = _env_int_clamped("LIMIT_CHANNEL", 800, 1, 1500)
 LIMIT_STREAM     = _env_int_clamped("LIMIT_STREAM", 1500, 1, 1500)
 
@@ -60,10 +70,10 @@ TZ_NAME          = os.getenv("TZ", "America/Argentina/Buenos_Aires")
 RB_MULTI         = float(os.getenv("RB_MULTI", "4.0"))
 RB_INIT_BAR      = int(os.getenv("RB_INIT_BAR", "301"))
 
-# ÚNICA salida CSV (por vela 1m)
-TABLE_CSV_PATH = os.getenv("TABLE_CSV_PATH", "tabla.csv").strip()
+# Salida CSV (nuevo nombre y columnas fijas)
+TABLE_CSV_PATH = os.getenv("TABLE_CSV_PATH", "tablaQ.csv").strip()
 TABLE_COLUMNS  = [
-    "CloseTimeMs","Date","Open","High","Low","Close","Volume",
+    "Date","Open","High","Low","Close",
     "UpperMid","ValueUpper","LowerMid","ValueLower",
     "TouchUpperQ","TouchLowerQ"
 ]
@@ -72,6 +82,14 @@ SLEEP_FALLBACK = int(os.getenv("SLEEP_FALLBACK", "5"))
 
 def fmt_ts(ts: pd.Timestamp) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
+
+def trunc3(x):
+    """Trunca a 3 decimales (sin redondear)."""
+    try:
+        fx = float(x)
+        return float(np.trunc(fx * 1000.0) / 1000.0)
+    except Exception:
+        return np.nan
 
 # ================== Binance client ==================
 try:
@@ -93,7 +111,7 @@ def _fetch_klines_raw(client, symbol: str, interval: str, limit: int):
     return client.klines(symbol=symbol, interval=interval, limit=limit)
 
 def fetch_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
-    """ Sanea 'limit' (1..1500) y maneja -1130 reintentando. """
+    """ Fetch corto: Sanea 'limit' (1..1500) y maneja -1130 reintentando. """
     client = get_binance_client()
     tries = []
     lim0 = _env_int_clamped("X_TMP_LIMIT_IGNORE_THIS", limit, 1, 1500)
@@ -144,7 +162,42 @@ def fetch_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
 
     raise last_err
 
-# ================== Indicador: SOLO canales ==================
+# ================== Paginado (historia larga) ==================
+_fetch_paginado_ok = False
+try:
+    from paginado_binance import fetch_klines_paginado
+    _fetch_paginado_ok = True
+except Exception:
+    print("[WARN] No se pudo importar 'paginado_binance.fetch_klines_paginado'.")
+    print("       El CSV usará historia CORTA. Ubicá 'paginado_binance.py' para igualar al gráfico.")
+
+def fetch_hist(symbol: str, interval: str, bars: int, prefer_paginado: bool) -> pd.DataFrame:
+    """
+    Devuelve DataFrame OHLCV con índice tz-aware, columnas:
+    Open, High, Low, Close, Volume, CloseTime, CloseTimeDT
+    """
+    if prefer_paginado and _fetch_paginado_ok:
+        df = fetch_klines_paginado(symbol, interval, bars)
+        if "CloseTime" not in df.columns:
+            dt_idx = pd.DatetimeIndex(df.index)
+            close_dt = dt_idx.shift(-1, freq=None)
+            close_ms = (close_dt.view('int64') // 1_000_000).astype('int64')
+            df["CloseTime"] = close_ms
+        if "CloseTimeDT" not in df.columns:
+            df["CloseTimeDT"] = pd.to_datetime(df["CloseTime"], unit="ms", utc=True).dt.tz_convert(ZoneInfo(TZ_NAME))
+        keep = ["Open","High","Low","Close","Volume","CloseTime","CloseTimeDT"]
+        for k in keep:
+            if k not in df.columns:
+                if k == "Volume": df[k] = 0.0
+                elif k == "CloseTime": df[k] = 0
+                elif k == "CloseTimeDT": df[k] = pd.to_datetime(df.index, utc=True)
+                else: df[k] = np.nan
+        df = df[keep].sort_index()
+        return df
+    limit = bars if bars <= 1500 else 1500
+    return fetch_klines(symbol, interval, limit)
+
+# ================== Indicador (canales) ==================
 def _rma(x: pd.Series, length: int) -> pd.Series:
     alpha = 1.0 / length
     return x.ewm(alpha=alpha, adjust=False).mean()
@@ -156,7 +209,6 @@ def _atr(df: pd.DataFrame, length: int) -> pd.Series:
     return _rma(tr, length)
 
 def compute_channels(df: pd.DataFrame, multi: float = 4.0, init_bar: int = 301) -> pd.DataFrame:
-    """ Devuelve Value, ValueUpper, ValueLower, UpperMid, LowerMid, UpperQ, LowerQ """
     df = df.copy()
     df['hl2'] = (df['High'] + df['Low']) / 2.0
     atr200 = _atr(df, 200)
@@ -228,31 +280,51 @@ def compute_channels(df: pd.DataFrame, multi: float = 4.0, init_bar: int = 301) 
     }, index=df.index)
 
 # ================== CSV helpers ==================
-def ensure_table_csv_header(path: str):
-    if not os.path.exists(path):
-        pd.DataFrame(columns=TABLE_COLUMNS).to_csv(path, index=False, encoding="utf-8")
+def ensure_table_csv_header_strict(path: str):
+    """
+    Encabezado fijo garantizado:
+    - Si no existe o está vacío: crea con header correcto.
+    - Si existe pero el header no coincide: respalda y recrea con header correcto.
+    """
+    want = TABLE_COLUMNS
+    header_line = ",".join(want)
+
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        pd.DataFrame(columns=want).to_csv(path, index=False, encoding="utf-8")
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            first = (f.readline() or "").strip()
+    except Exception:
+        first = ""
+
+    if first.replace(" ", "") != header_line.replace(" ", ""):
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        bak = f"{path}.bak.{ts}"
+        try:
+            os.replace(path, bak)
+            print(f"[WARN] {os.path.basename(path)} tenía encabezado inválido. Backup: {bak}")
+        except Exception as e:
+            print(f"[WARN] No se pudo respaldar {path}: {e}")
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        pd.DataFrame(columns=want).to_csv(path, index=False, encoding="utf-8")
 
 def append_row_to_table(path: str, row: dict):
+    """Agrega fila con columnas fijas y formato a 3 decimales."""
     out = {k: row.get(k, np.nan) for k in TABLE_COLUMNS}
-    pd.DataFrame([out]).to_csv(path, mode="a", header=False, index=False, encoding="utf-8")
-
-def _append_row_dedup_fast(csv_path: str, close_time_ms: int, trow: dict):
-    """Append rápido evitando duplicados por CloseTimeMs sin leer todo el CSV."""
-    header_needed = not os.path.exists(csv_path)
-    if not header_needed:
-        try:
-            with open(csv_path, "rb") as f:
-                f.seek(0, io.SEEK_END)
-                size = f.tell()
-                f.seek(max(0, size - 4096))
-                tail = f.read().decode("utf-8", errors="ignore")
-            last_line = tail.strip().splitlines()[-1]
-            if "CloseTimeMs" in last_line and close_time_ms is not None:
-                if str(close_time_ms) in last_line:
-                    return
-        except Exception:
-            pass
-    append_row_to_table(csv_path, trow)
+    pd.DataFrame([out], columns=TABLE_COLUMNS).to_csv(
+        path,
+        mode="a",
+        header=False,
+        index=False,
+        encoding="utf-8",
+        float_format="%.3f",
+        na_rep=""
+    )
 
 # ================== Alineación CH → 1m ==================
 def _align_channels_to_stream(ch: pd.DataFrame, idx1m: pd.DatetimeIndex) -> pd.DataFrame:
@@ -270,17 +342,12 @@ def _align_channels_to_stream(ch: pd.DataFrame, idx1m: pd.DatetimeIndex) -> pd.D
 def run_loop_dual_tf():
     print(f"[INFO] Loop dual TF → CSV único '{TABLE_CSV_PATH}'")
     print(f"[INIT] {SYMBOL_DISPLAY} CH={CHANNEL_INTERVAL} | ST={STREAM_INTERVAL} | TZ={TZ_NAME}")
+    print(f"[INIT] Historia larga: CHANNEL_BARS={PLOT_CHANNEL_BARS} (paginado={USE_PAGINADO_CHANNEL}), STREAM_BARS={PLOT_STREAM_BARS} (paginado={USE_PAGINADO_STREAM})")
 
-    ensure_table_csv_header(TABLE_CSV_PATH)
+    # Header fijo sí o sí
+    ensure_table_csv_header_strict(TABLE_CSV_PATH)
 
-    last_logged_ms = None
-    if os.path.exists(TABLE_CSV_PATH):
-        try:
-            tail = pd.read_csv(TABLE_CSV_PATH, usecols=["CloseTimeMs"]).tail(1)
-            if not tail.empty:
-                last_logged_ms = int(tail["CloseTimeMs"].iloc[0])
-        except Exception:
-            pass
+    last_logged_ms = None  # solo para dedupe in-memory
 
     chans_1m = pd.DataFrame()
     chans_cached = pd.DataFrame()
@@ -289,67 +356,67 @@ def run_loop_dual_tf():
     while True:
         try:
             # 1) Stream 1m (incluye vela en curso)
-            df1 = fetch_klines(API_SYMBOL, STREAM_INTERVAL, LIMIT_STREAM)
+            if USE_PAGINADO_STREAM:
+                df1 = fetch_hist(API_SYMBOL, STREAM_INTERVAL, PLOT_STREAM_BARS, prefer_paginado=True)
+            else:
+                df1 = fetch_klines(API_SYMBOL, STREAM_INTERVAL, LIMIT_STREAM)
+
             now_utc_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             df1_closed = df1[df1["CloseTime"] <= now_utc_ms]
             if df1_closed.empty:
                 time.sleep(SLEEP_FALLBACK)
                 continue
 
-            # 2) Canales: recomputar SOLO si cambió la última CH cerrada
-            dfCH = fetch_klines(API_SYMBOL, CHANNEL_INTERVAL, LIMIT_CHANNEL)
-            if len(dfCH) >= 2:
-                keyCH = int(dfCH.iloc[-2]["CloseTime"])  # última CH CERRADA
+            # 2) Canales: recomputar SOLO si cambió la última CH cerrada (clave corta)
+            dfCH_key = fetch_klines(API_SYMBOL, CHANNEL_INTERVAL, max(3, min(LIMIT_CHANNEL, 1500)))
+            if len(dfCH_key) >= 2:
+                keyCH = int(dfCH_key.iloc[-2]["CloseTime"])  # última CH CERRADA
             else:
-                keyCH = int(dfCH.iloc[-1]["CloseTime"])
+                keyCH = int(dfCH_key.iloc[-1]["CloseTime"])
 
             if (last_ch_closed_key is None) or (keyCH != last_ch_closed_key) or chans_cached.empty:
-                ohlc = dfCH[["Open","High","Low","Close","Volume"]]
-                chans_cached = compute_channels(ohlc, multi=RB_MULTI, init_bar=RB_INIT_BAR)
+                dfCH_hist = fetch_hist(API_SYMBOL, CHANNEL_INTERVAL, PLOT_CHANNEL_BARS, prefer_paginado=bool(USE_PAGINADO_CHANNEL))
+                ohlcCH = dfCH_hist[["Open","High","Low","Close","Volume"]]
+                chans_cached = compute_channels(ohlcCH, multi=RB_MULTI, init_bar=RB_INIT_BAR)
                 last_ch_closed_key = keyCH
+                print(f"[INFO] Recalculados canales con historia larga ({len(ohlcCH)} barras {CHANNEL_INTERVAL}).")
 
-            # 2.b) SIEMPRE re-alinear canales a la grilla 1m actual
+            # 2.b) Realinear canales a 1m
             chans_1m = _align_channels_to_stream(chans_cached, df1_closed.index)
 
             # 3) Última 1m CERRADA → CSV
             last_row = df1_closed.iloc[-1]
             last_idx = df1_closed.index[-1]        # tz-aware
-            last_ms  = int(last_row["CloseTime"])  # clave numérica
+            last_ms  = int(last_row["CloseTime"])  # clave en memoria
 
             if (last_logged_ms is None) or (last_ms > last_logged_ms):
                 ch = chans_1m.loc[last_idx] if (not chans_1m.empty and last_idx in chans_1m.index) else pd.Series()
 
-                # Señales: toque a Q-lines en la vela 1m cerrada (sin EPS)
+                # Toques Q en 1m
                 touch_uq = int(pd.notna(ch.get("UpperQ")) and (last_row["Low"] <= ch["UpperQ"] <= last_row["High"]))
                 touch_lq = int(pd.notna(ch.get("LowerQ")) and (last_row["Low"] <= ch["LowerQ"] <= last_row["High"]))
 
-                def _num(x):
-                    try:
-                        return round(float(x), 6)
-                    except Exception:
-                        return np.nan
+                def _t(x): return trunc3(x)
 
                 trow = {
-                    "CloseTimeMs": last_ms,
-                    "Date":   fmt_ts(last_idx),
-                    "Open":   round(float(last_row["Open"]),  6),
-                    "High":   round(float(last_row["High"]),  6),
-                    "Low":    round(float(last_row["Low"]),   6),
-                    "Close":  round(float(last_row["Close"]), 6),
-                    "Volume": round(float(last_row["Volume"]),6),
-                    "UpperMid":   _num(ch.get("UpperMid")),
-                    "ValueUpper": _num(ch.get("ValueUpper")),
-                    "LowerMid":   _num(ch.get("LowerMid")),
-                    "ValueLower": _num(ch.get("ValueLower")),
+                    "Date":        fmt_ts(last_idx),
+                    "Open":        _t(last_row["Open"]),
+                    "High":        _t(last_row["High"]),
+                    "Low":         _t(last_row["Low"]),
+                    "Close":       _t(last_row["Close"]),
+                    "UpperMid":    _t(ch.get("UpperMid")),
+                    "ValueUpper":  _t(ch.get("ValueUpper")),
+                    "LowerMid":    _t(ch.get("LowerMid")),
+                    "ValueLower":  _t(ch.get("ValueLower")),
                     "TouchUpperQ": touch_uq,
                     "TouchLowerQ": touch_lq,
                 }
-                _append_row_dedup_fast(TABLE_CSV_PATH, last_ms, trow)
+                append_row_to_table(TABLE_CSV_PATH, trow)
 
-                print(f"[{trow['Date']}] Open:{trow['Open']:>10} High:{trow['High']:>10} "
-                      f"Low:{trow['Low']:>10} Close:{trow['Close']:>10} "
-                      f"| UMid:{trow['UpperMid']} VUp:{trow['ValueUpper']} "
-                      f"LMid:{trow['LowerMid']} VLo:{trow['ValueLower']} "
+                print(f"[{trow['Date']}] "
+                      f"Open:{trow['Open']:.3f} High:{trow['High']:.3f} Low:{trow['Low']:.3f} Close:{trow['Close']:.3f} "
+                      f"| UMid:{trow['UpperMid']:.3f} VUp:{trow['ValueUpper']:.3f} "
+                      f"LMid:{trow['LowerMid']:.3f} VLo:{trow['ValueLower']:.3f} "
                       f"| UQ:{trow['TouchUpperQ']}  LQ:{trow['TouchLowerQ']}")
 
                 last_logged_ms = last_ms
