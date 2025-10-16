@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tabla Q — Monitor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="top-bar">
+      <div>
+        <h1>Monitor de Tabla Q</h1>
+        <p class="subtitle">Visualización en vivo de <code>tablaQ.csv</code></p>
+      </div>
+      <div class="actions">
+        <label>
+          <input type="checkbox" id="auto-refresh" checked />
+          Auto refresh <span id="refresh-interval"></span>
+        </label>
+        <button id="reload-btn" type="button">Actualizar ahora</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="summary" id="summary">
+        <h2>Último registro</h2>
+        <div class="summary-grid" id="summary-content">
+          <p class="empty">No hay datos.</p>
+        </div>
+      </section>
+
+      <section class="filters">
+        <h2>Filtros rápidos</h2>
+        <label>
+          <input type="checkbox" id="filter-upper" />
+          Mostrar solo filas con <strong>TouchUpperQ = 1</strong>
+        </label>
+        <label>
+          <input type="checkbox" id="filter-lower" />
+          Mostrar solo filas con <strong>TouchLowerQ = 1</strong>
+        </label>
+        <label>
+          Últimas filas a mostrar:
+          <input type="number" id="rows-limit" min="10" max="1000" step="10" value="200" />
+        </label>
+      </section>
+
+      <section class="table-wrapper">
+        <div class="table-header">
+          <h2>tablaQ.csv</h2>
+          <span id="last-updated" class="muted"></span>
+        </div>
+        <div class="table-container">
+          <table id="data-table">
+            <thead></thead>
+            <tbody>
+              <tr><td class="empty" colspan="12">Cargando datos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <template id="summary-template">
+      <div>
+        <span class="label">Fecha</span>
+        <span class="value" data-field="Date"></span>
+      </div>
+      <div>
+        <span class="label">Open</span>
+        <span class="value" data-field="Open"></span>
+      </div>
+      <div>
+        <span class="label">High</span>
+        <span class="value" data-field="High"></span>
+      </div>
+      <div>
+        <span class="label">Low</span>
+        <span class="value" data-field="Low"></span>
+      </div>
+      <div>
+        <span class="label">Close</span>
+        <span class="value" data-field="Close"></span>
+      </div>
+      <div>
+        <span class="label">UpperMid</span>
+        <span class="value" data-field="UpperMid"></span>
+      </div>
+      <div>
+        <span class="label">LowerMid</span>
+        <span class="value" data-field="LowerMid"></span>
+      </div>
+      <div>
+        <span class="label">TouchUpperQ</span>
+        <span class="value highlight" data-field="TouchUpperQ"></span>
+      </div>
+      <div>
+        <span class="label">TouchLowerQ</span>
+        <span class="value highlight" data-field="TouchLowerQ"></span>
+      </div>
+    </template>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

@@ -50,7 +50,7 @@ def _file_id(path: str) -> Optional[str]:
     try:
         st = os.stat(path)
         # Usamos inodo + tamaño como id de rotación simple
-        return f"{st.st_ino}:{st.st_size}"
+        return f"{st.st_dev}:{st.st_ino}"
     except Exception:
         return None
 
@@ -141,18 +141,18 @@ def process_once(state: Dict[str, Any]) -> Dict[str, Any]:
         # igual no abortamos; podrías elegir abortar si querés
     fid = _file_id(TABLE_CSV_PATH)
 
+    current_size = os.path.getsize(TABLE_CSV_PATH)
+    if state.get("offset", 0) > current_size:
+        state["offset"] = 0
+
     try:
         with open(TABLE_CSV_PATH, "rb") as fbin:
             # Si cambió el archivo (rotación/tamaño), reiniciar offset a línea 2 (después del header)
             if state.get("file") != fid:
-                # leer header y posicionarnos al final de la línea de header
-                tfp = io.TextIOWrapper(fbin, encoding="utf-8", newline="")
-                header_line = tfp.readline()
-                start_offset = fbin.tell()
                 state["file"] = fid
-                state["offset"] = start_offset
-                # no procesamos filas anteriores, solo nuevas desde acá
-                print(f"[INFO] Nuevo archivo o rotación detectada. Offset reiniciado a {start_offset}.")
+                fbin.seek(0, os.SEEK_END)
+                state["offset"] = fbin.tell()
+                print(f"[INFO] Nuevo archivo o rotacion detectada. Offset fijado a {state['offset']}")
                 return state
 
             # Continuar desde el offset guardado
