@@ -1,5 +1,5 @@
 {
-  "last_update_id": 464107236,
+  "last_update_id": 464107250,
   "targets": {
     "436048117": {
       "type": "private",
@@ -13,5 +13,6 @@
       "type": "supergroup",
       "title": "pruebas de grupos"
     }
-  }
+  },
+  "last_fetch_ts": 1760760063.3010192
 }

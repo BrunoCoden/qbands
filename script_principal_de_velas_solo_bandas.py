@@ -75,6 +75,7 @@ TABLE_CSV_PATH = os.getenv("TABLE_CSV_PATH", "tablaQ.csv").strip()
 TABLE_COLUMNS  = [
     "Date","Open","High","Low","Close",
     "UpperMid","ValueUpper","LowerMid","ValueLower",
+    "UpperQ","LowerQ",
     "TouchUpperQ","TouchLowerQ"
 ]
 
@@ -408,6 +409,8 @@ def run_loop_dual_tf():
                     "ValueUpper":  _t(ch.get("ValueUpper")),
                     "LowerMid":    _t(ch.get("LowerMid")),
                     "ValueLower":  _t(ch.get("ValueLower")),
+                    "UpperQ":      _t(ch.get("UpperQ")),
+                    "LowerQ":      _t(ch.get("LowerQ")),
                     "TouchUpperQ": touch_uq,
                     "TouchLowerQ": touch_lq,
                 }
@@ -417,6 +420,7 @@ def run_loop_dual_tf():
                       f"Open:{trow['Open']:.3f} High:{trow['High']:.3f} Low:{trow['Low']:.3f} Close:{trow['Close']:.3f} "
                       f"| UMid:{trow['UpperMid']:.3f} VUp:{trow['ValueUpper']:.3f} "
                       f"LMid:{trow['LowerMid']:.3f} VLo:{trow['ValueLower']:.3f} "
+                      f"UQ:{trow['UpperQ']:.3f} LQ:{trow['LowerQ']:.3f} "
                       f"| UQ:{trow['TouchUpperQ']}  LQ:{trow['TouchLowerQ']}")
 
                 last_logged_ms = last_ms
