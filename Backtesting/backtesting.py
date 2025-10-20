@@ -300,12 +300,16 @@ def fetch_history(
     channels = compute_channels(ohlc, multi=RB_MULTI, init_bar=RB_INIT_BAR)
 
     aligned = _align_channels_to_stream(channels, stream_df.index)
+    trend_close = channel_cut["Close"]
+    trend_sma = trend_close.rolling(window=100, min_periods=1).mean()
+    trend_sma_aligned = trend_sma.reindex(stream_df.index).ffill().bfill()
 
     df = stream_df.copy()
     df["Date"] = df["CloseTimeDT"]
     df["Value"] = aligned.get("Value")
     for col in ["UpperMid", "ValueUpper", "LowerMid", "ValueLower", "UpperQ", "LowerQ"]:
         df[col] = aligned.get(col)
+    df["TrendSMA"] = trend_sma_aligned
 
     upperq = df["UpperQ"]
     lowerq = df["LowerQ"]
@@ -329,6 +333,7 @@ def fetch_history(
         "ValueLower",
         "UpperQ",
         "LowerQ",
+        "TrendSMA",
         "TouchUpperQ",
         "TouchLowerQ",
     ]
@@ -376,6 +381,10 @@ class TradeResult:
 class Backtester:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
+        trend_series = self.df.get('TrendSMA')
+        if trend_series is not None:
+            trend_series = trend_series.astype(float)
+        self._trend_sma = trend_series
         self.pending_orders: List[LimitOrder] = []
         self.open_positions: List[Position] = []
         self.closed_trades: List[TradeResult] = []
@@ -404,6 +413,36 @@ class Backtester:
             self._evaluate_positions(row_ctx)
             self._evaluate_orders(row_ctx, row)
             self._maybe_replace_orders(row_ctx)
+
+    def _close_conflicting_positions(self, new_side: str, price: float, timestamp: pd.Timestamp) -> None:
+        remaining: List[Position] = []
+        for pos in self.open_positions:
+            if pos.side != new_side:
+                trade = self._force_close_position(pos, price, timestamp, reason="opposite_signal")
+                self.closed_trades.append(trade)
+            else:
+                remaining.append(pos)
+        self.open_positions = remaining
+
+    def _force_close_position(self, pos: Position, exit_price: float, timestamp: pd.Timestamp, reason: str) -> TradeResult:
+        if pos.side == "long":
+            pnl_pct = ((exit_price - pos.entry_price) / pos.entry_price) * 100.0
+        else:
+            pnl_pct = ((pos.entry_price - exit_price) / pos.entry_price) * 100.0
+        bars_held = pos.bars_in_trade + 1
+        return TradeResult(
+            side=pos.side,
+            context=pos.context,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            entry_time=pos.entry_time,
+            exit_time=timestamp,
+            exit_reason=reason,
+            profit_pct=pos.profit_pct * 100.0,
+            stop_pct=pos.stop_pct * 100.0,
+            pnl_pct=pnl_pct,
+            bars_held=bars_held,
+        )
 
     def _evaluate_positions(self, row_ctx: dict) -> None:
         still_open: List[Position] = []
@@ -487,24 +526,20 @@ class Backtester:
         return low <= price <= high
 
     def _open_position(self, order: LimitOrder, row_ctx: dict, row: pd.Series) -> Optional[Position]:
-        range_pct = self._range_pct(row, order.context)
-        if range_pct is None or range_pct <= 0:
-            return None
+        profit_pct = 0.03
+        stop_pct = 0.02
 
-        profit_pct = range_pct
-        stop_pct = range_pct * 0.65
+        if not self._is_trend_aligned(row, order):
+            return None
 
         entry_price = order.price
         entry_time = row_ctx["timestamp"]
 
-        if order.side == "buy":
-            tp_price = entry_price * (1.0 + profit_pct)
-            sl_price = entry_price * (1.0 - stop_pct)
-            side = "long"
-        else:
-            tp_price = entry_price * (1.0 - profit_pct)
-            sl_price = entry_price * (1.0 + stop_pct)
-            side = "short"
+        side = "long" if order.side == "buy" else "short"
+        tp_price = entry_price * (1.0 + profit_pct) if side == "long" else entry_price * (1.0 - profit_pct)
+        sl_price = entry_price * (1.0 - stop_pct) if side == "long" else entry_price * (1.0 + stop_pct)
+
+        self._close_conflicting_positions(side, entry_price, entry_time)
 
         return Position(
             side=side,
@@ -516,6 +551,18 @@ class Backtester:
             tp_price=tp_price,
             sl_price=sl_price,
         )
+
+    def _is_trend_aligned(self, row: pd.Series, order: LimitOrder) -> bool:
+        trend_series = self._trend_sma
+        if trend_series is None or trend_series.empty:
+            return True
+        price_close = _to_float(row.get('Close'))
+        price_sma = _to_float(row.get('TrendSMA'))
+        if price_close is None or price_sma is None:
+            return True
+        if order.side == 'buy':
+            return price_close >= price_sma
+        return price_close <= price_sma
 
     def _range_pct(self, row: pd.Series, context: str) -> Optional[float]:
         upper_mid = _to_float(row.get("UpperMid"))
