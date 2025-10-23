@@ -47,6 +47,7 @@ RB_MULTI = float(os.getenv("RB_MULTI", "4.0"))
 RB_INIT_BAR = int(os.getenv("RB_INIT_BAR", "301"))
 
 DEFAULT_MONTHS = 2
+TREND_CONFIRM_BARS = 30  # candles that must respect the 100-period trend
 
 
 def _to_float(value) -> Optional[float]:
@@ -383,14 +384,18 @@ class Backtester:
         self.df = df.copy()
         trend_series = self.df.get('TrendSMA')
         if trend_series is not None:
-            trend_series = trend_series.astype(float)
+            trend_series = pd.to_numeric(trend_series, errors="coerce")
         self._trend_sma = trend_series
+        close_series = self.df.get("Close")
+        if close_series is not None:
+            close_series = pd.to_numeric(close_series, errors="coerce")
+        self._close_series = close_series
         self.pending_orders: List[LimitOrder] = []
         self.open_positions: List[Position] = []
         self.closed_trades: List[TradeResult] = []
 
     def run(self) -> None:
-        for _, row in self.df.iterrows():
+        for idx, row in self.df.iterrows():
             ts = row["Date"]
             high = _to_float(row.get("High"))
             low = _to_float(row.get("Low"))
@@ -408,6 +413,7 @@ class Backtester:
                 "value_lower": _to_float(row.get("ValueLower")),
                 "touch_upper": _to_int(row.get("TouchUpperQ")),
                 "touch_lower": _to_int(row.get("TouchLowerQ")),
+                "row_index": idx,
             }
 
             self._evaluate_positions(row_ctx)
@@ -529,7 +535,7 @@ class Backtester:
         profit_pct = 0.03
         stop_pct = 0.02
 
-        if not self._is_trend_aligned(row, order):
+        if not self._is_trend_aligned(row, order, row_ctx.get("row_index")):
             return None
 
         entry_price = order.price
@@ -552,7 +558,7 @@ class Backtester:
             sl_price=sl_price,
         )
 
-    def _is_trend_aligned(self, row: pd.Series, order: LimitOrder) -> bool:
+    def _is_trend_aligned(self, row: pd.Series, order: LimitOrder, row_index: Optional[int] = None) -> bool:
         trend_series = self._trend_sma
         if trend_series is None or trend_series.empty:
             return True
@@ -560,9 +566,33 @@ class Backtester:
         price_sma = _to_float(row.get('TrendSMA'))
         if price_close is None or price_sma is None:
             return True
-        if order.side == 'buy':
-            return price_close >= price_sma
-        return price_close <= price_sma
+        is_buy = order.side == 'buy'
+        if is_buy and price_close < price_sma:
+            return False
+        if (not is_buy) and price_close > price_sma:
+            return False
+
+        close_series = self._close_series
+        if (
+            row_index is None
+            or close_series is None
+            or close_series.empty
+        ):
+            return True
+
+        if row_index + 1 < TREND_CONFIRM_BARS:
+            return False
+
+        start = row_index - TREND_CONFIRM_BARS + 1
+        closes_window = close_series.iloc[start:row_index + 1]
+        trend_window = trend_series.iloc[start:row_index + 1]
+
+        if closes_window.isna().any() or trend_window.isna().any():
+            return False
+
+        if is_buy:
+            return bool((closes_window >= trend_window).all())
+        return bool((closes_window <= trend_window).all())
 
     def _range_pct(self, row: pd.Series, context: str) -> Optional[float]:
         upper_mid = _to_float(row.get("UpperMid"))
