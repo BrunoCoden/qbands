@@ -26,8 +26,8 @@ STATE_PATH       = os.getenv("ALERTS_STATE_PATH", ".alertsQ.state.json").strip()
 # Columnas esperadas (header fijo del CSV)
 EXPECTED_COLUMNS = [
     "Date","Open","High","Low","Close",
-    "UpperMid","ValueUpper","LowerMid","ValueLower",
-    "UpperQ","LowerQ",
+    "Volume","Value","UpperMid","ValueUpper","LowerMid","ValueLower",
+    "UpperQ","LowerQ","TrendSMA",
     "TouchUpperQ","TouchLowerQ"
 ]
 

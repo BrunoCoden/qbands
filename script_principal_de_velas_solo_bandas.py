@@ -74,8 +74,8 @@ RB_INIT_BAR      = int(os.getenv("RB_INIT_BAR", "301"))
 TABLE_CSV_PATH = os.getenv("TABLE_CSV_PATH", "tablaQ.csv").strip()
 TABLE_COLUMNS  = [
     "Date","Open","High","Low","Close",
-    "UpperMid","ValueUpper","LowerMid","ValueLower",
-    "UpperQ","LowerQ",
+    "Volume","Value","UpperMid","ValueUpper","LowerMid","ValueLower",
+    "UpperQ","LowerQ","TrendSMA",
     "TouchUpperQ","TouchLowerQ"
 ]
 
@@ -332,7 +332,7 @@ def _align_channels_to_stream(ch: pd.DataFrame, idx1m: pd.DatetimeIndex) -> pd.D
     """Extiende canales (CHANNEL_INTERVAL) a grilla 1m por forward-fill."""
     if ch is None or ch.empty:
         return pd.DataFrame(index=idx1m)
-    want = ["Value","ValueUpper","ValueLower","UpperMid","LowerMid","UpperQ","LowerQ"]
+    want = ["Value","ValueUpper","ValueLower","UpperMid","LowerMid","UpperQ","LowerQ","TrendSMA"]
     for c in want:
         if c not in ch.columns:
             ch[c] = pd.NA
@@ -379,6 +379,10 @@ def run_loop_dual_tf():
                 dfCH_hist = fetch_hist(API_SYMBOL, CHANNEL_INTERVAL, PLOT_CHANNEL_BARS, prefer_paginado=bool(USE_PAGINADO_CHANNEL))
                 ohlcCH = dfCH_hist[["Open","High","Low","Close","Volume"]]
                 chans_cached = compute_channels(ohlcCH, multi=RB_MULTI, init_bar=RB_INIT_BAR)
+                trend_close = ohlcCH["Close"].astype(float)
+                trend_sma = trend_close.rolling(window=100, min_periods=1).mean()
+                chans_cached = chans_cached.copy()
+                chans_cached["TrendSMA"] = trend_sma.reindex(chans_cached.index).ffill()
                 last_ch_closed_key = keyCH
                 print(f"[INFO] Recalculados canales con historia larga ({len(ohlcCH)} barras {CHANNEL_INTERVAL}).")
 
@@ -405,12 +409,15 @@ def run_loop_dual_tf():
                     "High":        _t(last_row["High"]),
                     "Low":         _t(last_row["Low"]),
                     "Close":       _t(last_row["Close"]),
+                    "Volume":      _t(last_row["Volume"]),
+                    "Value":       _t(ch.get("Value")),
                     "UpperMid":    _t(ch.get("UpperMid")),
                     "ValueUpper":  _t(ch.get("ValueUpper")),
                     "LowerMid":    _t(ch.get("LowerMid")),
                     "ValueLower":  _t(ch.get("ValueLower")),
                     "UpperQ":      _t(ch.get("UpperQ")),
                     "LowerQ":      _t(ch.get("LowerQ")),
+                    "TrendSMA":    _t(ch.get("TrendSMA")),
                     "TouchUpperQ": touch_uq,
                     "TouchLowerQ": touch_lq,
                 }
@@ -418,6 +425,7 @@ def run_loop_dual_tf():
 
                 print(f"[{trow['Date']}] "
                       f"Open:{trow['Open']:.3f} High:{trow['High']:.3f} Low:{trow['Low']:.3f} Close:{trow['Close']:.3f} "
+                      f"Vol:{trow['Volume']:.3f} Val:{trow['Value']:.3f} Trend:{trow['TrendSMA']:.3f} "
                       f"| UMid:{trow['UpperMid']:.3f} VUp:{trow['ValueUpper']:.3f} "
                       f"LMid:{trow['LowerMid']:.3f} VLo:{trow['ValueLower']:.3f} "
                       f"UQ:{trow['UpperQ']:.3f} LQ:{trow['LowerQ']:.3f} "

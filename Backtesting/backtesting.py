@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import sys
 from typing import Iterable, List, Optional
@@ -48,6 +50,30 @@ RB_INIT_BAR = int(os.getenv("RB_INIT_BAR", "301"))
 
 DEFAULT_MONTHS = 2
 TREND_CONFIRM_BARS = 30  # candles that must respect the 100-period trend
+BREAKEVEN_TRIGGER_PCT = 0.02  # move stop to breakeven after 2% in favor
+
+
+def _slugify_label(label: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", label).strip("-_")
+    return slug.lower()
+
+
+def _resolve_run_label(initial: Optional[str]) -> str:
+    label = (initial or "").strip()
+    if not label and sys.stdin.isatty():
+        try:
+            label = input("Nombre para la versión de salida (enter usa timestamp): ").strip()
+        except EOFError:
+            label = ""
+    if not label:
+        label = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return label
+
+
+def _labelled_path(path: Path, label: str) -> Path:
+    if not label:
+        return path
+    return path.with_name(f"{path.stem}_{label}{path.suffix}")
 
 
 def _to_float(value) -> Optional[float]:
@@ -362,6 +388,7 @@ class Position:
     tp_price: float
     sl_price: float
     bars_in_trade: int = 0
+    breakeven_active: bool = False
 
 
 @dataclass
@@ -453,6 +480,7 @@ class Backtester:
     def _evaluate_positions(self, row_ctx: dict) -> None:
         still_open: List[Position] = []
         for pos in self.open_positions:
+            self._maybe_move_stop_to_breakeven(pos, row_ctx)
             exit_event = self._position_exit(pos, row_ctx)
             if exit_event:
                 self.closed_trades.append(exit_event)
@@ -460,6 +488,22 @@ class Backtester:
                 pos.bars_in_trade += 1
                 still_open.append(pos)
         self.open_positions = still_open
+
+    def _maybe_move_stop_to_breakeven(self, pos: Position, row_ctx: dict) -> None:
+        if pos.breakeven_active:
+            return
+        high = row_ctx["high"]
+        low = row_ctx["low"]
+        if pos.side == "long":
+            trigger_price = pos.entry_price * (1.0 + BREAKEVEN_TRIGGER_PCT)
+            if high >= trigger_price:
+                pos.sl_price = max(pos.sl_price, pos.entry_price)
+                pos.breakeven_active = True
+        else:
+            trigger_price = pos.entry_price * (1.0 - BREAKEVEN_TRIGGER_PCT)
+            if low <= trigger_price:
+                pos.sl_price = min(pos.sl_price, pos.entry_price)
+                pos.breakeven_active = True
 
     def _position_exit(self, pos: Position, row_ctx: dict) -> Optional[TradeResult]:
         high = row_ctx["high"]
@@ -862,6 +906,7 @@ def main() -> None:
     parser.add_argument("--no-export-trades", action="store_true", help="No exportar la tabla de trades.")
     parser.add_argument("--summary-path", type=Path, default=Path("Backtesting/summary.csv"), help="Ruta para exportar métricas resumidas.")
     parser.add_argument("--no-summary", action="store_true", help="No exportar la tabla de resumen.")
+    parser.add_argument("--run-label", type=str, default=None, help="Etiqueta para los archivos de salida (se solicitará si no se indica).")
     args = parser.parse_args()
 
     if args.months and args.months <= 0:
@@ -889,6 +934,24 @@ def main() -> None:
     bt = Backtester(history)
     bt.run()
 
+    run_label = _resolve_run_label(args.run_label)
+    run_slug = _slugify_label(run_label)
+    if not run_slug:
+        run_slug = datetime.now().strftime("%Y%m%d-%H%M%S")
+    print(f"Usando etiqueta de salida: {run_slug}")
+
+    export_trades_path: Optional[Path] = None
+    if (not args.no_export_trades) and args.export_trades:
+        export_trades_path = _labelled_path(args.export_trades, run_slug)
+
+    summary_path: Optional[Path] = None
+    if not args.no_summary and args.summary_path:
+        summary_path = _labelled_path(args.summary_path, run_slug)
+
+    plot_path: Optional[Path] = None
+    if args.plot_path:
+        plot_path = _labelled_path(args.plot_path, run_slug)
+
     summary = bt.summary()
     print("=== Resumen Backtest ===")
     for key in (
@@ -909,19 +972,18 @@ def main() -> None:
     print(f"{'pending_orders':>18}: {summary['pending_orders']}")
 
     trades_df = bt.trades_dataframe()
-    if (not args.no_export_trades) and args.export_trades:
-        args.export_trades.parent.mkdir(parents=True, exist_ok=True)
-        trades_df.to_csv(args.export_trades, index=False)
-        print(f"Tabla de trades exportada a {args.export_trades}")
+    if export_trades_path:
+        export_trades_path.parent.mkdir(parents=True, exist_ok=True)
+        trades_df.to_csv(export_trades_path, index=False)
+        print(f"Tabla de trades exportada a {export_trades_path}")
 
-    summary_path = None if args.no_summary else args.summary_path
     if summary_path:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame([summary]).to_csv(summary_path, index=False)
         print(f"Resumen exportado a {summary_path}")
 
-    if args.plot_path:
-        path = plot_trades(history, trades_df, args.plot_path)
+    if plot_path:
+        path = plot_trades(history, trades_df, plot_path)
         if path:
             print(f"Gráfico generado en {path}")
 
