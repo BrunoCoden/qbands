@@ -76,6 +76,17 @@ def main():
     chans30 = compute_channels(ohlc30, multi=RB_MULTI, init_bar=RB_INIT_BAR)
     chans1  = _align_channels_to_stream(chans30, ohlc1.index)
 
+    # 2b) Tendencia SMA de 100 períodos alineada a 1m
+    trend_close = ohlc30["Close"]
+    trend_sma = trend_close.rolling(window=100, min_periods=1).mean()
+    trend_df = (
+        pd.DataFrame({"TrendSMA": trend_sma})
+        .reindex(chans1.index.union(trend_sma.index))
+        .sort_index()
+        .ffill()
+    )
+    chans1["TrendSMA"] = trend_df["TrendSMA"].reindex(chans1.index)
+
     # 3) Si no hay datos suficientes para canales, ploteo solo velas 1m
     cols_chk = ["Value","ValueUpper","ValueLower","UpperMid","LowerMid","UpperQ","LowerQ"]
     all_nan_cols = [c for c in cols_chk if not _has_data(chans1.get(c, pd.Series(dtype=float)))]
@@ -117,6 +128,8 @@ def main():
 
     add_if(_linebreak_like(chans1.get('UpperQ')),     color='yellow',  width=1, linestyle=':')
     add_if(_linebreak_like(chans1.get('LowerQ')),     color='yellow',  width=1, linestyle=':')
+
+    add_if(_linebreak_like(chans1.get('TrendSMA')),   color='#00bcd4', width=1.2, alpha=0.9)
 
     if _has_data(suq):
         ap.append(mpf.make_addplot(suq, type='scatter', marker='o', markersize=40, color='white'))

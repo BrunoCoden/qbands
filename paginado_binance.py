@@ -75,6 +75,8 @@ def fetch_klines_paginado(
     curr_start = start_ms
 
     while fetched < total_bars:
+        if curr_start > end_ms:
+            break
         batch_limit = min(page_limit, total_bars - fetched)
         data = client.klines(
             symbol=symbol,
