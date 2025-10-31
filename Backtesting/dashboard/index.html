@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <title>Dashboard Backtesting Q-Bands</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>Dashboard Backtesting Q-Bands</h1>
+      <p>Cargá la tabla de trades o usá el modo automático para seguir el backtesting en vivo.</p>
+      <div class="controls">
+        <label>
+          Ruta CSV
+          <input type="text" id="csv-path" value="../live_trades.csv" placeholder="Ruta relativa al dashboard">
+        </label>
+        <button id="load-btn">Cargar</button>
+        <label class="file-label">
+          o elegir archivo
+          <input type="file" id="file-input" accept=".csv">
+        </label>
+        <label>
+          Resumen
+          <input type="text" id="summary-path" value="../live_summary.csv" placeholder="Ruta resumen">
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="auto-refresh" checked>
+          Auto refrescar cada 30s
+        </label>
+      </div>
+      <div class="filters">
+        <label>
+          Side
+          <select id="filter-side">
+            <option value="">Todos</option>
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </label>
+        <label>
+          Contexto
+          <select id="filter-context">
+            <option value="">Todos</option>
+            <option value="upper">Upper</option>
+            <option value="lower">Lower</option>
+          </select>
+        </label>
+        <label>
+          Resultado
+          <select id="filter-exit">
+            <option value="">Todos</option>
+            <option value="target_hit">Target</option>
+            <option value="stop_hit">Stop</option>
+          </select>
+        </label>
+        <label>
+          Fecha desde
+          <input type="datetime-local" id="filter-start">
+        </label>
+        <label>
+          Fecha hasta
+          <input type="datetime-local" id="filter-end">
+        </label>
+        <button id="reset-filters">Limpiar filtros</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="cards" id="stats-cards">
+        <article class="card">
+          <h2>Trades</h2>
+          <p id="stat-trades">-</p>
+        </article>
+        <article class="card">
+          <h2>Win Rate</h2>
+          <p id="stat-winrate">-</p>
+        </article>
+        <article class="card">
+          <h2>Total PnL %</h2>
+          <p id="stat-total-pnl">-</p>
+        </article>
+        <article class="card">
+          <h2>Promedio PnL %</h2>
+          <p id="stat-avg-pnl">-</p>
+        </article>
+        <article class="card">
+          <h2>PnL Máximo</h2>
+          <p id="stat-max-pnl">-</p>
+        </article>
+        <article class="card">
+          <h2>PnL Mínimo</h2>
+          <p id="stat-min-pnl">-</p>
+        </article>
+      </section>
+
+      <section class="live-summary" id="live-summary">
+        <h2>Resumen en vivo</h2>
+        <div class="summary-grid">
+          <div>
+            <span class="label">Actualizado</span>
+            <span class="value" id="live-logged-at">-</span>
+          </div>
+          <div>
+            <span class="label">Velas</span>
+            <span class="value" id="live-candles">-</span>
+          </div>
+          <div>
+            <span class="label">Trades</span>
+            <span class="value" id="live-trades">-</span>
+          </div>
+          <div>
+            <span class="label">Ganadas</span>
+            <span class="value" id="live-wins">-</span>
+          </div>
+          <div>
+            <span class="label">Perdidas</span>
+            <span class="value" id="live-losses">-</span>
+          </div>
+          <div>
+            <span class="label">Win rate</span>
+            <span class="value" id="live-win-rate">-</span>
+          </div>
+          <div>
+            <span class="label">Retorno total %</span>
+            <span class="value" id="live-total-return">-</span>
+          </div>
+          <div>
+            <span class="label">Retorno prom. %</span>
+            <span class="value" id="live-avg-return">-</span>
+          </div>
+          <div>
+            <span class="label">Posiciones abiertas</span>
+            <span class="value" id="live-open-positions">-</span>
+          </div>
+          <div>
+            <span class="label">Órdenes pendientes</span>
+            <span class="value" id="live-pending-orders">-</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="charts">
+        <div class="chart-container">
+          <div class="chart-header">
+            <h2>Cumulative PnL %</h2>
+            <button class="btn-reset" data-reset="cumulative">Reset zoom</button>
+          </div>
+          <div class="chart-canvas">
+            <canvas id="chart-cumulative"></canvas>
+          </div>
+        </div>
+        <div class="chart-container">
+          <div class="chart-header">
+            <h2>PnL por Trade</h2>
+            <button class="btn-reset" data-reset="distribution">Reset zoom</button>
+          </div>
+          <div class="chart-canvas">
+            <canvas id="chart-distribution"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <div class="table-header">
+          <h2>Detalle de Trades</h2>
+          <div class="table-actions">
+            <label>
+              Buscar
+              <input type="search" id="table-search" placeholder="Filtrar texto...">
+            </label>
+            <label>
+              Entradas por página
+              <select id="page-size">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+              </select>
+            </label>
+            <div class="pagination-controls">
+              <button id="prev-page" class="btn-secondary">Anterior</button>
+              <span id="pagination-info">Página 0 de 0</span>
+              <button id="next-page" class="btn-secondary">Siguiente</button>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrapper">
+          <table id="trades-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>Tip: serví el dashboard con <code>python -m http.server</code> dentro de <code>Backtesting</code> y abrí <code>dashboard/index.html</code>.</p>
+    </footer>
+  </body>
+</html>

@@ -5,6 +5,7 @@
 import os
 import json
 import time
+import math
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -63,7 +64,10 @@ class TelegramTargets:
             return
         finally:
             self.data.setdefault("last_update_id", 0)
-            self.data.setdefault("targets", {})
+            targets = self.data.get("targets")
+            if not isinstance(targets, dict):
+                targets = {}
+            self.data["targets"] = targets
             self.data.setdefault("last_fetch_ts", 0.0)
 
     @property
@@ -252,15 +256,40 @@ def _escape_md(s: str) -> str:
 
 def _trunc3(x):
     try:
-        return int(float(x) * 1000) / 1000.0
+        value = float(x)
     except Exception:
         return x
+    if math.isnan(value):
+        return value
+    return int(value * 1000) / 1000.0
 
 def _fmt_price(x):
     try:
-        return f"{_trunc3(x):.3f}"
+        value = _trunc3(x)
+        if isinstance(value, float) and math.isnan(value):
+            return "-"
+        return f"{value:.3f}"
     except Exception:
         return "-"
+
+
+def _fmt_percent(x):
+    try:
+        value = float(x)
+        if math.isnan(value):
+            return "-"
+        return f"{value:.2f}%"
+    except Exception:
+        return "-"
+
+
+def _context_label(context: str) -> str:
+    return "LowerQ" if (context or "").lower() == "lower" else "UpperQ"
+
+
+def _side_label(side: str) -> str:
+    return "LONG" if (side or "").lower() == "long" else "SHORT"
+
 
 def _build_message(side: str, trow: dict, symbol: str = None) -> str:
     sym = symbol or SYMBOL_DISPLAY
@@ -282,23 +311,14 @@ def _build_message(side: str, trow: dict, symbol: str = None) -> str:
 
     return f"*{title}*\n{line1}\n{line2}\n{line3}"
 
-def send_touch_alert(side: str, trow: dict, symbol: str = None):
-    """
-    Envía una alerta a Telegram.
-    Parámetros:
-      - side: "Upper" o "Lower"
-      - trow: dict con las claves Date, Open, High, Low, Close, UpperMid, ValueUpper, LowerMid, ValueLower
-      - symbol: opcional, para override de símbolo
-    """
+
+def _send_message(text: str):
     err = _require_cfg()
     if err:
-        # Silencioso si faltan credenciales o deshabilitado
         return {"status": "skipped", "reason": err}
 
-    msg = _build_message(side, trow, symbol)
-
     base_payload = {
-        "text": msg,
+        "text": text,
         "parse_mode": TELEGRAM_PARSE_MODE,
         "disable_web_page_preview": True,
     }
@@ -341,6 +361,62 @@ def send_touch_alert(side: str, trow: dict, symbol: str = None):
     overall = "ok" if any(r.get("status") == "ok" for r in results) else "error"
     return {"status": overall, "results": results}
 
+
+
+def _context_label(context: str) -> str:
+    return "LowerQ" if (context or "").lower() == "lower" else "UpperQ"
+
+
+def _side_label(side: str) -> str:
+    return "LONG" if (side or "").lower() == "long" else "SHORT"
+
+
+def send_trade_open_alert(*, side: str, context: str, entry_time: str, entry_price: float, reference_mid: float, reference_value: float, symbol: str = None):
+    sym = (symbol or SYMBOL_DISPLAY).strip()
+    context_lbl = _context_label(context)
+    side_lbl = _side_label(side)
+    title = _escape_md(f"{sym} {STREAM_INTERVAL} | {side_lbl} {context_lbl} OPEN")
+    lines = [
+        _escape_md(entry_time or "-"),
+        _escape_md(f"Entrada: {_fmt_price(entry_price)}"),
+        _escape_md(f"{context_lbl}: Value {_fmt_price(reference_value)} | Mid {_fmt_price(reference_mid)}"),
+    ]
+    msg = f"*{title}*\n" + "\n".join(lines)
+    return _send_message(msg)
+
+
+def send_trade_close_alert(trade: dict, symbol: str = None):
+    sym = (symbol or SYMBOL_DISPLAY).strip()
+    context_lbl = _context_label(trade.get("context"))
+    side_lbl = _side_label(trade.get("side"))
+    title = _escape_md(f"{sym} {STREAM_INTERVAL} | {side_lbl} {context_lbl} CLOSE")
+    entry_time = trade.get("entry_time", "-")
+    exit_time = trade.get("exit_time", "-")
+    reason = str(trade.get("exit_reason", "")) or "-"
+    reason = reason.replace("_", " " ).title()
+    lines = [
+        _escape_md(f"Entrada: {_fmt_price(trade.get('entry_price'))} @ {entry_time}"),
+        _escape_md(f"Salida: {_fmt_price(trade.get('exit_price'))} @ {exit_time}"),
+        _escape_md(f"Resultado: {reason} | PnL {_fmt_percent(trade.get('pnl_pct'))}"),
+        _escape_md(f"{context_lbl}: Value {_fmt_price(trade.get('reference_value'))} | Mid {_fmt_price(trade.get('reference_mid'))}"),
+        _escape_md(f"TP {_fmt_percent(trade.get('profit_target_pct'))} | SL {_fmt_percent(trade.get('stop_pct'))}"),
+        _escape_md(f"Barras: {trade.get('bars_held', '-')}"),
+    ]
+    msg = f"*{title}*\n" + "\n".join(lines)
+    return _send_message(msg)
+
+
+def send_touch_alert(side: str, trow: dict, symbol: str = None):
+    """
+    Envía una alerta a Telegram.
+    Parámetros:
+      - side: "Upper" o "Lower"
+      - trow: dict con las claves Date, Open, High, Low, Close, UpperMid, ValueUpper, LowerMid, ValueLower
+      - symbol: opcional, para override de símbolo
+    """
+    msg = _build_message(side, trow, symbol)
+    return _send_message(msg)
+
 # Modo CLI opcional: enviar prueba rápida
 if __name__ == "__main__":
     sample = {
@@ -355,3 +431,26 @@ if __name__ == "__main__":
         "ValueLower": 1180.33,
     }
     print(send_touch_alert("Upper", sample))
+    print(send_trade_open_alert(
+        side="long",
+        context="lower",
+        entry_time=datetime.now().isoformat(timespec="seconds"),
+        entry_price=1234.5,
+        reference_mid=1225.0,
+        reference_value=1200.0,
+    ))
+    print(send_trade_close_alert({
+        "side": "short",
+        "context": "upper",
+        "entry_time": datetime.now().isoformat(timespec="seconds"),
+        "exit_time": datetime.now().isoformat(timespec="seconds"),
+        "entry_price": 1300.0,
+        "exit_price": 1257.0,
+        "exit_reason": "target_hit",
+        "profit_target_pct": 3.0,
+        "stop_pct": 2.0,
+        "pnl_pct": 3.31,
+        "bars_held": 5,
+        "reference_mid": 1280.0,
+        "reference_value": 1305.0,
+    }))

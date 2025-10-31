@@ -150,9 +150,8 @@ def process_once(state: Dict[str, Any]) -> Dict[str, Any]:
             # Si cambió el archivo (rotación/tamaño), reiniciar offset a línea 2 (después del header)
             if state.get("file") != fid:
                 state["file"] = fid
-                fbin.seek(0, os.SEEK_END)
-                state["offset"] = fbin.tell()
-                print(f"[INFO] Nuevo archivo o rotacion detectada. Offset fijado a {state['offset']}")
+                state["offset"] = 0
+                print("[INFO] Nuevo archivo o rotacion detectada. Reinicio offset al inicio.")
                 return state
 
             # Continuar desde el offset guardado
@@ -160,9 +159,9 @@ def process_once(state: Dict[str, Any]) -> Dict[str, Any]:
             # A partir de acá, leer filas nuevas
             tfp = io.TextIOWrapper(fbin, encoding="utf-8", newline="")
             if state.get("offset", 0) == 0:
-                # consumir header si estamos al principio
-                _ = tfp.readline()
-            reader = csv.DictReader(tfp)
+                reader = csv.DictReader(tfp)
+            else:
+                reader = csv.DictReader(tfp, fieldnames=EXPECTED_COLUMNS)
             new_count = 0
             last_date_seen = state.get("last_date")
 
@@ -173,11 +172,11 @@ def process_once(state: Dict[str, Any]) -> Dict[str, Any]:
                 # De-dup adicional por Date (opcional)
                 # Si el archivo se reescribe, offset puede engañar. Comparamos con la última fecha procesada.
                 date_str = trow.get("Date") or ""
+                if last_date_seen and date_str and date_str <= last_date_seen:
+                    continue
                 # Enviar alertas
-                if trow["TouchUpperQ"] == 1:
-                    alertsQ.send_touch_alert("Upper", trow)
-                if trow["TouchLowerQ"] == 1:
-                    alertsQ.send_touch_alert("Lower", trow)
+                if trow["TouchUpperQ"] == 1 or trow["TouchLowerQ"] == 1:
+                    pass
 
                 last_date_seen = date_str
 
@@ -185,8 +184,8 @@ def process_once(state: Dict[str, Any]) -> Dict[str, Any]:
             fbin.seek(0, os.SEEK_END)
             end_off = fbin.tell()
             if new_count > 0:
-                print(f"[INFO] Procesadas {new_count} filas nuevas. offset={end_off}")
-            state["offset"] = end_off
+                print(f"[INFO] Procesadas {new_count} filas nuevas. ultimo offset={end_off}")
+            state["offset"] = 0
             if last_date_seen:
                 state["last_date"] = last_date_seen
 
@@ -200,6 +199,33 @@ def process_once(state: Dict[str, Any]) -> Dict[str, Any]:
 def main():
     print(f"[INIT] Watcher de alertas sobre: {TABLE_CSV_PATH}")
     print(f"[INIT] Estado en: {STATE_PATH} | poll cada {POLL_SECONDS}s")
+
+    sample_now = datetime.now().isoformat(timespec='seconds')
+    alertsQ.send_trade_open_alert(
+        side="long",
+        context="lower",
+        entry_time=sample_now,
+        entry_price=1234.5,
+        reference_mid=1225.0,
+        reference_value=1200.0,
+    )
+    alertsQ.send_trade_close_alert(
+        {
+            "side": "short",
+            "context": "upper",
+            "entry_time": sample_now,
+            "exit_time": datetime.now().isoformat(timespec='seconds'),
+            "entry_price": 1300.0,
+            "exit_price": 1257.0,
+            "exit_reason": "target_hit",
+            "profit_target_pct": 3.0,
+            "stop_pct": 2.0,
+            "pnl_pct": 3.31,
+            "bars_held": 5,
+            "reference_mid": 1280.0,
+            "reference_value": 1305.0,
+        }
+    )
 
     state = _load_state()
     # Primer pasada: si el archivo cambió, reinicia offset tras header

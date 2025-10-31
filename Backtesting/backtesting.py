@@ -390,6 +390,8 @@ class Position:
     stop_pct: float    # decimal
     tp_price: float
     sl_price: float
+    reference_mid: float
+    reference_value: float
     bars_in_trade: int = 0
     breakeven_active: bool = False
 
@@ -407,6 +409,8 @@ class TradeResult:
     stop_pct: float
     pnl_pct: float
     bars_held: int
+    reference_mid: float
+    reference_value: float
 
 
 class Backtester:
@@ -557,6 +561,8 @@ class Backtester:
             stop_pct=pos.stop_pct * 100.0,
             pnl_pct=pnl_pct,
             bars_held=bars_held,
+            reference_mid=pos.reference_mid,
+            reference_value=pos.reference_value,
         )
 
     def _evaluate_orders(self, row_ctx: dict, row: pd.Series) -> None:
@@ -588,6 +594,13 @@ class Backtester:
         entry_price = order.price
         entry_time = row_ctx["timestamp"]
 
+        if order.context == "lower":
+            reference_mid = _to_float(row.get("LowerMid")) or entry_price
+            reference_value = _to_float(row.get("ValueLower")) or entry_price
+        else:
+            reference_mid = _to_float(row.get("UpperMid")) or entry_price
+            reference_value = _to_float(row.get("ValueUpper")) or entry_price
+
         side = "long" if order.side == "buy" else "short"
         tp_price = entry_price * (1.0 + profit_pct) if side == "long" else entry_price * (1.0 - profit_pct)
         sl_price = entry_price * (1.0 - stop_pct) if side == "long" else entry_price * (1.0 + stop_pct)
@@ -603,6 +616,8 @@ class Backtester:
             stop_pct=stop_pct,
             tp_price=tp_price,
             sl_price=sl_price,
+            reference_mid=reference_mid,
+            reference_value=reference_value,
         )
 
     def _is_trend_aligned(self, row: pd.Series, order: LimitOrder, row_index: Optional[int] = None) -> bool:
@@ -748,6 +763,8 @@ class Backtester:
                     "stop_pct",
                     "pnl_pct",
                     "bars_held",
+                    "reference_mid",
+                    "reference_value",
                 ]
             )
         data = [
@@ -763,6 +780,8 @@ class Backtester:
                 "stop_pct": t.stop_pct,
                 "pnl_pct": t.pnl_pct,
                 "bars_held": t.bars_held,
+                "reference_mid": t.reference_mid,
+                "reference_value": t.reference_value,
             }
             for t in self.closed_trades
         ]
